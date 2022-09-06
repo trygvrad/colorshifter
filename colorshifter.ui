@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>908</width>
-    <height>507</height>
+    <width>808</width>
+    <height>506</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,6 +19,16 @@
      <layout class="QHBoxLayout" name="horizontalLayout">
       <item>
        <widget class="QLineEdit" name="path"/>
+      </item>
+      <item>
+       <widget class="QSpinBox" name="downsample">
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="value">
+         <number>4</number>
+        </property>
+       </widget>
       </item>
       <item>
        <widget class="QPushButton" name="save_button">
@@ -46,6 +56,12 @@
       <property name="orientation">
        <enum>Qt::Horizontal</enum>
       </property>
+      <property name="opaqueResize">
+       <bool>true</bool>
+      </property>
+      <property name="childrenCollapsible">
+       <bool>true</bool>
+      </property>
       <widget class="QWidget" name="verticalLayoutWidget">
        <layout class="QHBoxLayout" name="horizontalLayout_2">
         <property name="rightMargin">
@@ -60,12 +76,16 @@
        </layout>
       </widget>
       <widget class="QWidget" name="verticalLayoutWidget_2">
-       <layout class="QVBoxLayout" name="verticalLayout_2">
+       <layout class="QHBoxLayout" name="horizontalLayout_3">
         <item>
-         <widget class="ImageView" name="original_colorspace" native="true"/>
-        </item>
-        <item>
-         <widget class="ImageView" name="shifted_colorspace" native="true"/>
+         <widget class="ImageView" name="original_colorspace" native="true">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>0</height>
+           </size>
+          </property>
+         </widget>
         </item>
        </layout>
       </widget>
@@ -91,7 +111,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>908</width>
+     <width>808</width>
      <height>22</height>
     </rect>
    </property>

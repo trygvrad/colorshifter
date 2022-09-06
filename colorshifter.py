@@ -56,7 +56,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowIcon(QtGui.QIcon('iconOri.ico'))
 
 
-        for img in  [self.image_in, self.original_colorspace, self.shifted_colorspace, self.image_out]:
+        for img in  [self.image_in, self.original_colorspace, self.image_out]:
             img.ui.roiBtn.hide()
             img.ui.menuBtn.hide()
             img.has_img = False
@@ -92,6 +92,11 @@ class MainWindow(QtWidgets.QMainWindow):
         while (os.path.exists(f'output/{self.date_today}/{self.output_int}.png')):
             self.output_int += 1
         self.path.setText(f'output/{self.date_today}/{self.output_int}')
+        self.updating_img = False
+        self.splitter.setSizes([300,300])
+
+        file = '/home/trygvrad/colorshifter/Screenshot from 2022-09-06 11-03-52.png'
+        self.new_file(file)
 
     def save_clicked(self,event):
         file = self.path.text()
@@ -112,7 +117,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def new_file(self,file):
         formats = ['png','jpg','jpeg']
         if file.split('.')[-1] in formats :
-            image = np.array(Image.open(file))
+            downsample = self.downsample.value()
+            image = np.array(Image.open(file))[::downsample, ::downsample,:]
             self.image = image
             self.image_in.getImageItem().setImage(np.transpose(image, axes = (1,0,2)))
             self.image_out.getImageItem().setImage(np.transpose(image, axes = (1,0,2)))
@@ -120,19 +126,16 @@ class MainWindow(QtWidgets.QMainWindow):
             v0 = self.image_in.getView()
             self.image_out.getView().setXLink(v0)
             self.image_out.getView().setYLink(v0)
-            r = 45
-            self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=r, l=256, mask='no_mask', rot=0)
+            self.r = 45
+            self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)
 
             self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)))
-            self.shifted_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)))
 
             v0 = self.original_colorspace.getView()
-            self.shifted_colorspace.getView().setXLink(v0)
-            self.shifted_colorspace.getView().setYLink(v0)
 
-            Jab = colorspacious.cspace_convert(image[:,:,:3], "sRGB255", 'CAM02-LCD')
+            Jab = colorspacious.cspace_convert(image[:,:,:3], 'sRGB255', 'CAM02-LCD')
 
-            a_1 = np.linspace(-r, r,256)
+            a_1 = np.linspace(-self.r, self.r,256)
             d2 = 0.5*(a_1[1]-a_1[0])
             range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
             hist, xedges, yedges = np.histogram2d(Jab[:,:,1].ravel(), Jab[:,:,2].ravel(),
@@ -140,8 +143,13 @@ class MainWindow(QtWidgets.QMainWindow):
             hist = scipy.ndimage.gaussian_filter(hist, 3)
             #hist = np.log(hist+0.1)
             hist = np.sqrt(hist)
-            self.shifted_colorspace.getImageItem().setImage(np.transpose(hist, axes = (1,0)))
-            curves = []
+
+            if hasattr(self, 'ori_curves'):
+                for c in self.ori_curves:
+                    self.original_colorspace.removeItem(c)
+
+
+            self.ori_curves = []
 
             levels = np.linspace(hist.min(), hist.max(), 7)
             for i, v in enumerate(levels[1:-1]):
@@ -149,10 +157,66 @@ class MainWindow(QtWidgets.QMainWindow):
                 c = pyqtgraph.IsocurveItem(data =hist.T,  level=v, pen="w")
                 c.setParentItem(self.original_colorspace.getImageItem())  ## make sure isocurve is always correctly displayed over image
                 c.setZValue(100)
-                curves.append(c)
+                self.ori_curves.append(c)
                 self.original_colorspace.addItem(c)
 
+            self.roi = self.original_colorspace.roi
+            self.roi.show()
+            self.roi.setSize((256,256), update=True, finish=False)
+            self.roi.sigRegionChanged.connect(self.roiChanged)
 
+    def roiChanged(self):
+        if self.updating_img == False:
+            self.updating_img = True
+            QtCore.QTimer.singleShot(250, self.update_img)
+
+    def update_img(self):
+        self.updating_img = False
+        pos = self.roi.pos()
+        size = self.roi.size()
+        angle = self.roi.angle()
+        c = np.cos(angle*np.pi/180)
+        s = np.sin(angle*np.pi/180)
+        center = [pos[0] +size[0]/2*c -size[1]/2*s,
+                  pos[1] +size[0]/2*s +size[1]/2*c]
+        Jab = colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
+        # rotate
+        a          = c*Jab[:,:,1]+s*Jab[:,:,2]
+        Jab[:,:,2] = -s*Jab[:,:,1]+c*Jab[:,:,2]
+        Jab[:,:,1] = a
+        # scale
+        Jab[:,:,1] *= size[0]/256
+        Jab[:,:,2] *= size[1]/256
+        # shift center
+        Jab[:,:,1] += (center[1]-128)*self.r/128
+        Jab[:,:,2] += (center[0]-128)*self.r/128
+        shifted_image = colorspacious.cspace_convert(Jab, 'CAM02-LCD', 'sRGB255')
+        self.image_out.getImageItem().setImage(np.transpose(shifted_image, axes = (1,0,2)))
+
+
+        a_1 = np.linspace(-self.r, self.r,256)
+        d2 = 0.5*(a_1[1]-a_1[0])
+        range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
+        hist, xedges, yedges = np.histogram2d(Jab[:,:,1].ravel(), Jab[:,:,2].ravel(),
+                bins=256, range=range, normed=None, weights=None, density=None)
+        hist = scipy.ndimage.gaussian_filter(hist, 3)
+        #hist = np.log(hist+0.1)
+        hist = np.sqrt(hist)
+
+        if hasattr(self, 'fit_curves'):
+            for c in self.fit_curves:
+                self.original_colorspace.removeItem(c)
+
+        self.fit_curves = []
+
+        levels = np.linspace(hist.min(), hist.max(), 7)
+        for i, v in enumerate(levels[1:-1]):
+            ## generate isocurve with automatic color selection
+            c = pyqtgraph.IsocurveItem(data =hist.T,  level=v, pen=[0,0,0])
+            c.setParentItem(self.original_colorspace.getImageItem())  ## make sure isocurve is always correctly displayed over image
+            c.setZValue(100)
+            self.fit_curves.append(c)
+            self.original_colorspace.addItem(c)
 
     '''
     def update_composite(self):
