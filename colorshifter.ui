@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>808</width>
-    <height>506</height>
+    <width>1455</width>
+    <height>802</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -64,14 +64,11 @@
       </property>
       <widget class="QWidget" name="verticalLayoutWidget">
        <layout class="QHBoxLayout" name="horizontalLayout_2">
-        <property name="rightMargin">
-         <number>0</number>
-        </property>
         <item>
-         <widget class="ImageView" name="image_in" native="true"/>
+         <widget class="QGraphicsView" name="gv_in"/>
         </item>
         <item>
-         <widget class="ImageView" name="image_out" native="true"/>
+         <widget class="QGraphicsView" name="gv_out"/>
         </item>
        </layout>
       </widget>
@@ -111,7 +108,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>808</width>
+     <width>1455</width>
      <height>22</height>
     </rect>
    </property>

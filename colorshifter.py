@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from PyQt5 import QtCore, QtGui, QtWidgets, uic
-from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import  QColorDialog #QTreeWidgetItem
+from PyQt5.QtGui import QColor, QImage, QPixmap
+from PyQt5.QtWidgets import  QColorDialog, QGraphicsPixmapItem, QGraphicsScene#QTreeWidgetItem
 import pyqtgraph
 import os
 import sys
@@ -13,16 +13,25 @@ import datetime
 from PIL import Image
 import scipy.ndimage
 
-def array_to_QPixmap(self,img):
-    w,h,ch = img.shape
-    # Convert resulting image to pixmap
-    if img.ndim == 1:
-        img =  cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
+def set_transform(source, target):
+    horz_scroll = source.horizontalScrollBar().value()
+    vert_scroll = source.verticalScrollBar().value()
+    transform = source.transform()
+    #zoom = source._zoom
+    # temporary block signals from scroll bars to prevent interference
+    #horz_blocked = target.horizontalScrollBar().blockSignals(True)
+    #vert_blocked = target.verticalScrollBar().blockSignals(True)
+    #target._zoom = zoom
+    target.setTransform(transform)
+    #dx = horz_scroll - target.horizontalScrollBar().value()
+    #dy = vert_scroll - target.verticalScrollBar().value()
+    #target.horizontalScrollBar().setValue(dx)
+    #target.verticalScrollBar().setValue(dy)
+    target.horizontalScrollBar().setValue(horz_scroll)
+    target.verticalScrollBar().setValue(vert_scroll)
+    #target.horizontalScrollBar().blockSignals(horz_blocked)
+    #target.verticalScrollBar().blockSignals(vert_blocked)
 
-    qimg = QImage(img.data, h, w, 3*h, QImage.Format_RGB888)
-    qpixmap = QPixmap(qimg)
-
-    return qpixmap
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, *args, **kwargs):
         pyqtgraph.setConfigOption('background', 'w')
@@ -66,7 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowIcon(QtGui.QIcon('iconOri.ico'))
 
 
-        for img in  [self.image_in, self.original_colorspace, self.image_out]:
+        for img in  [self.original_colorspace]:
             img.ui.roiBtn.hide()
             img.ui.menuBtn.hide()
             img.has_img = False
@@ -78,9 +87,21 @@ class MainWindow(QtWidgets.QMainWindow):
         def dragEnterEvent(ev):
             ev.accept()
 
-        self.image_in.setAcceptDrops(True)
-        self.image_in.dropEvent = self.image_in_drop
-        self.image_in.dragEnterEvent = dragEnterEvent
+        self.gv_in.setAcceptDrops(True)
+        self.gv_in.dropEvent = self.image_in_drop
+        self.gv_in.dragEnterEvent = dragEnterEvent
+        self.gv_out.setAcceptDrops(True)
+        self.gv_out.dropEvent = self.image_in_drop
+        self.gv_out.dragEnterEvent = dragEnterEvent
+
+
+        self.scene_in = QGraphicsScene()
+        self.scene_out = QGraphicsScene()
+        self.gv_in.setScene(self.scene_in)
+        self.gv_out.setScene(self.scene_out)
+        self.gv_in.viewport().installEventFilter(self)
+        self.gv_out.viewport().installEventFilter(self)
+
 
         send_queue, return_queue = queue.Queue(), queue.Queue()
         self.rimt = rimt(send_queue, return_queue).rimt
@@ -106,7 +127,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.setSizes([300,300])
 
         self.levels = np.array([[0, 255.0], [0, 255], [0, 255]])
-        for img in  [self.image_in, self.original_colorspace, self.image_out]:
+        for img in  [self.original_colorspace]:
             img.getImageItem().setLevels(self.levels)
         #colorstamps.stamps.get_sat_limts()
 
@@ -129,17 +150,63 @@ class MainWindow(QtWidgets.QMainWindow):
         self.new_file(file)
 
 
+    def eventFilter(self, source, event):
+        check = source == self.gv_in.viewport()
+        check = check or source == self.gv_out.viewport()
+        check = check and event.type() == QtCore.QEvent.Wheel
+        if check:
+            gv = self.gv_in
+            gv2 = self.gv_out
+            if source == self.gv_out.viewport():
+                gv = self.gv_out
+                gv2 = self.gv_in
+            if event.angleDelta().y() > 0:
+                scale = 1.125
+            else:
+                scale = .9
+
+            view_pos = event.pos()
+            scene_pos = gv.mapToScene(view_pos)
+            gv.centerOn(scene_pos)
+            gv.scale(scale, scale)
+            delta = gv.mapToScene(view_pos) - gv.mapToScene(gv.viewport().rect().center())
+            gv.centerOn(scene_pos - delta)
+
+            set_transform(gv, gv2)
+            # do not propagate the event to the scroll area scrollbars
+            return True
+            #elif event.type() == QtCore.QEvent.GraphicsSceneMousePress:
+            #...
+        return super().eventFilter(source,event)
+
+    def array_to_QPixmap(self,img):
+        w,h,ch = img.shape
+        # Convert resulting image to pixmap
+        qimg = QImage(img.data, h, w, 3*h, QImage.Format_RGB888)
+        qpixmap = QPixmap(qimg)
+        return qpixmap
+
     def new_file(self,file):
         formats = ['png','jpg','jpeg']
         if file.split('.')[-1] in formats :
             downsample = self.downsample.value()
             image = np.array(Image.open(file))[::downsample, ::downsample,:3]
-            self.image_in.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
-            self.image_out.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
 
-            v0 = self.image_in.getView()
-            self.image_out.getView().setXLink(v0)
-            self.image_out.getView().setYLink(v0)
+            pic = QGraphicsPixmapItem()
+            pic.setPixmap(self.array_to_QPixmap(np.array(image)))
+            #self.scene.setSceneRect(0, 0, 400, 400)
+            self.scene_in.addItem(pic)
+            pic = QGraphicsPixmapItem()
+            pic.setPixmap(self.array_to_QPixmap(np.array(image)))
+            #self.scene.setSceneRect(0, 0, 400, 400)
+            self.scene_out.addItem(pic)
+
+            #self.image_in.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+            #self.image_out.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+
+            #v0 = self.image_in.getView()
+            #self.image_out.getView().setXLink(v0)
+            #self.image_out.getView().setYLink(v0)
             self.r = 45
             self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)*255
 
