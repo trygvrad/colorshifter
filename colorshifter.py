@@ -13,6 +13,16 @@ import datetime
 from PIL import Image
 import scipy.ndimage
 
+def array_to_QPixmap(self,img):
+    w,h,ch = img.shape
+    # Convert resulting image to pixmap
+    if img.ndim == 1:
+        img =  cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
+
+    qimg = QImage(img.data, h, w, 3*h, QImage.Format_RGB888)
+    qpixmap = QPixmap(qimg)
+
+    return qpixmap
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, *args, **kwargs):
         pyqtgraph.setConfigOption('background', 'w')
@@ -95,6 +105,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.updating_img = False
         self.splitter.setSizes([300,300])
 
+        self.levels = np.array([[0, 255.0], [0, 255], [0, 255]])
+        for img in  [self.image_in, self.original_colorspace, self.image_out]:
+            img.getImageItem().setLevels(self.levels)
+        #colorstamps.stamps.get_sat_limts()
+
         file = '/home/trygvrad/colorshifter/Screenshot from 2022-09-06 11-03-52.png'
         self.new_file(file)
 
@@ -118,23 +133,22 @@ class MainWindow(QtWidgets.QMainWindow):
         formats = ['png','jpg','jpeg']
         if file.split('.')[-1] in formats :
             downsample = self.downsample.value()
-            image = np.array(Image.open(file))[::downsample, ::downsample,:]
-            self.image = image
-            self.image_in.getImageItem().setImage(np.transpose(image, axes = (1,0,2)))
-            self.image_out.getImageItem().setImage(np.transpose(image, axes = (1,0,2)))
+            image = np.array(Image.open(file))[::downsample, ::downsample,:3]
+            self.image_in.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+            self.image_out.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
 
             v0 = self.image_in.getView()
             self.image_out.getView().setXLink(v0)
             self.image_out.getView().setYLink(v0)
             self.r = 45
-            self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)
+            self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)*255
 
-            self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)))
+            self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
 
             v0 = self.original_colorspace.getView()
 
             Jab = colorspacious.cspace_convert(image[:,:,:3], 'sRGB255', 'CAM02-LCD')
-
+            self.Jab = Jab
             a_1 = np.linspace(-self.r, self.r,256)
             d2 = 0.5*(a_1[1]-a_1[0])
             range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
@@ -165,6 +179,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.roi.setSize((256,256), update=True, finish=False)
             self.roi.sigRegionChanged.connect(self.roiChanged)
 
+
     def roiChanged(self):
         if self.updating_img == False:
             self.updating_img = True
@@ -179,19 +194,24 @@ class MainWindow(QtWidgets.QMainWindow):
         s = np.sin(angle*np.pi/180)
         center = [pos[0] +size[0]/2*c -size[1]/2*s,
                   pos[1] +size[0]/2*s +size[1]/2*c]
-        Jab = colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
+        Jab = np.copy(self.Jab) #colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
+
+        # scale
+        Jab[:,:,1] *= size[1]/256
+        Jab[:,:,2] *= size[0]/256
         # rotate
         a          = c*Jab[:,:,1]+s*Jab[:,:,2]
         Jab[:,:,2] = -s*Jab[:,:,1]+c*Jab[:,:,2]
         Jab[:,:,1] = a
-        # scale
-        Jab[:,:,1] *= size[0]/256
-        Jab[:,:,2] *= size[1]/256
         # shift center
         Jab[:,:,1] += (center[1]-128)*self.r/128
         Jab[:,:,2] += (center[0]-128)*self.r/128
+        colorstamps.stamps.apply_sat_limit(Jab,'individual')
+
         shifted_image = colorspacious.cspace_convert(Jab, 'CAM02-LCD', 'sRGB255')
-        self.image_out.getImageItem().setImage(np.transpose(shifted_image, axes = (1,0,2)))
+        shifted_image[shifted_image>255] = 255
+        shifted_image[shifted_image<0] = 0
+        self.image_out.getImageItem().setImage(np.transpose(shifted_image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
 
 
         a_1 = np.linspace(-self.r, self.r,256)
