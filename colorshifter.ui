@@ -21,6 +21,20 @@
        <widget class="QLineEdit" name="path"/>
       </item>
       <item>
+       <widget class="QPushButton" name="save_button">
+        <property name="text">
+         <string>Save</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_4">
+        <property name="text">
+         <string>Downsample</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QSpinBox" name="downsample">
         <property name="minimum">
          <number>1</number>
@@ -31,9 +45,35 @@
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="save_button">
+       <widget class="QLabel" name="label_2">
         <property name="text">
-         <string>Save</string>
+         <string>Limit lightness</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QSlider" name="limit_slider">
+        <property name="maximumSize">
+         <size>
+          <width>200</width>
+          <height>16777215</height>
+         </size>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="value">
+         <number>100</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_3">
+        <property name="text">
+         <string>Limit saturation</string>
         </property>
        </widget>
       </item>

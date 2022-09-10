@@ -13,6 +13,177 @@ import datetime
 from PIL import Image
 import scipy.ndimage
 
+
+
+def dragEnterEvent(self, event):
+    event.accept()
+def dragMoveEvent(self, event):
+    event.accept()
+def dragLeaveEvent(self, event):
+    event.accept()
+#setattr(QGraphicsScene,'dragEnterEvent',dragEnterEvent)
+#setattr(QGraphicsScene,'dragMoveEvent',dragMoveEvent)
+#setattr(QGraphicsScene,'dragLeaveEvent',dragLeaveEvent)
+
+def apply_sat_limit(Jab, limit_sat = 'shared'):
+    '''
+    apply a saturation limit to Jab in order to ensure valid saturation when the limit of the RGB colorspace is reached
+    Args:
+        Jab: np array of shape (n,m,3) encoded in the colorspace
+        limit_sat: 'shared' or 'individual'
+            if 'shared', all hues share same limit to saturation (the minimum where all saturation values present in the colormap can be represented)
+            if 'individual', different hues have different sauration limits
+    returns:
+        None (Jab is modified in-place)
+    '''
+
+    #limit = sat[valid_argmax]
+    #limit_ax_0_J = J
+    #limit_ax_1_phi = phi
+    limit, limit_ax_0_J, limit_ax_1_phi = get_sat_limts()
+    inerpolator = scipy.interpolate.RectBivariateSpline(limit_ax_0_J, limit_ax_1_phi, limit)
+
+    phi = np.arctan2(Jab[:,:,1],Jab[:,:,2])
+    sat = np.sqrt(Jab[:,:,1]**2 + Jab[:,:,2]**2)
+
+    max_sat = inerpolator( Jab[:,:,0], phi, grid = False)
+    if limit_sat == 'shared':
+        max_sat[:,:] = np.min(max_sat, axis=1)[:,np.newaxis]
+    mask = sat>max_sat
+    #sat[mask] = max_sat[mask]
+    change = (max_sat[mask]+0.000000001)/(sat[mask]+0.000000001)
+    Jab[mask,1] *= change
+    Jab[mask,2] *= change
+
+def get_sat_limts():
+    '''
+        returns the a 2d matrix of approximate limits to sat (radius in a-b space) in terms of phi and J
+    '''
+
+    if not 'limit' in globals():
+        global limit, limit_ax_0_J, limit_ax_1_phi
+
+        phi = np.linspace(-np.pi, np.pi, 256+1)
+        J = np.linspace(12.5, 129.5,128)
+        sat = np.linspace(0,70,256)
+
+        J_phi_sat = np.empty((len(J),len(phi),len(sat),3))
+        J_phi_sat[:,:,:,0] = J[:,np.newaxis,np.newaxis]
+        J_phi_sat[:,:,:,1] = phi[np.newaxis,:,np.newaxis]
+        J_phi_sat[:,:,:,2] = sat[np.newaxis,np.newaxis,:]
+
+        Jab = np.empty(J_phi_sat.shape)
+        Jab[:,:,:,0] = J_phi_sat[:,:,:,0]
+        Jab[:,:,:,1] = J_phi_sat[:,:,:,2]*np.sin(J_phi_sat[:,:,:,1])
+        Jab[:,:,:,2] = J_phi_sat[:,:,:,2]*np.cos(J_phi_sat[:,:,:,1])
+        rgb = colorspacious.cspace_convert(Jab, 'CAM02-LCD', 'sRGB255')
+        rgb[rgb>255.5] = np.nan
+        rgb[rgb<-0.5] = np.nan
+
+        flat_rgb = np.sum(rgb, axis = -1)
+        flat_rgb[:,:,0] = 0
+        ''' no need for this here!
+        # there are some strange regsions in the limits-overview because there are 'jumps' as we go through phi
+        # therefore limit the derivative in phi
+        for i, _ in enumerate(sat[:-1]):
+            flat_rgb[:,0,i]  +=  flat_rgb[:,-1,i]
+            flat_rgb[:,-1,i] +=  flat_rgb[:,0,i]
+            flat_rgb[:,1:,i+1]  +=  flat_rgb[:,:-1,i]
+            flat_rgb[:,:-1,i+1] +=  flat_rgb[:,1:,i]
+
+        flat_rgb[:,0,-1]  +=  flat_rgb[:,-1,-1]
+        flat_rgb[:,-1,-1] +=  flat_rgb[:,0,-1]
+        '''
+        valid = np.invert(np.isnan(flat_rgb)) + np.linspace(0,0.9,len(sat))[np.newaxis,np.newaxis,:]
+        valid_argmax = np.argmax(valid, axis = -1)
+
+        limit = sat[valid_argmax]
+        limit_ax_0_J = J
+        limit_ax_1_phi = phi
+    return limit, limit_ax_0_J, limit_ax_1_phi
+
+
+def apply_J_limit(Jab, limiting_type = 'shared'):
+    '''
+    apply a lightness limit to Jab in order to ensure valid saturation when the limit of the RGB colorspace is reached
+    Args:
+        Jab: np array of shape (n,m,3) encoded in the colorspace
+        limit_J: 'shared' or 'individual'
+            if 'shared', all hues share same limit to J (the minimum where all J values present in the colormap can be represented)
+            if 'individual', different hues have different J limits
+    returns:
+        None (Jab is modified in-place)
+    '''
+
+    #limit = sat[valid_argmax]
+    #limit_ax_0_J = J
+    #limit_ax_1_phi = phi
+    limit, limit_ax_2_sat, limit_ax_1_phi = get_J_limts()
+    inerpolator = scipy.interpolate.RectBivariateSpline(limit_ax_1_phi, limit_ax_2_sat, limit)
+
+    phi = np.arctan2(Jab[:,:,1],Jab[:,:,2])
+    sat = np.sqrt(Jab[:,:,1]**2 + Jab[:,:,2]**2)
+
+    max_J = inerpolator( phi, sat, grid = False)
+    if limiting_type == 'shared':
+        max_J[:,:] = np.max(max_J, axis=1)[:,np.newaxis]
+    mask = Jab[:,:,0]>max_J
+    #sat[mask] = max_J[mask]
+    #   change = (max_J[mask]+0.000000001)/(Jab[mask,0]+0.000000001)
+    Jab[mask,0] = max_J[mask]
+
+
+
+def get_J_limts():
+    '''
+        returns the a 2d matrix of approximate limits to sat (radius in a-b space) in terms of phi and J
+    '''
+
+    if not 'J_limit' in globals():
+        global J_limit, J_limit_ax_2_sat, J_limit_ax_1_phi
+
+        phi = np.linspace(-np.pi, np.pi, 256+1)
+        J = np.linspace(12.5, 129.5,128)
+        sat = np.linspace(0,70,256)
+
+        J_phi_sat = np.empty((len(J),len(phi),len(sat),3))
+        J_phi_sat[:,:,:,0] = J[:,np.newaxis,np.newaxis]
+        J_phi_sat[:,:,:,1] = phi[np.newaxis,:,np.newaxis]
+        J_phi_sat[:,:,:,2] = sat[np.newaxis,np.newaxis,:]
+
+        Jab = np.empty(J_phi_sat.shape)
+        Jab[:,:,:,0] = J_phi_sat[:,:,:,0]
+        Jab[:,:,:,1] = J_phi_sat[:,:,:,2]*np.sin(J_phi_sat[:,:,:,1])
+        Jab[:,:,:,2] = J_phi_sat[:,:,:,2]*np.cos(J_phi_sat[:,:,:,1])
+        rgb = colorspacious.cspace_convert(Jab, 'CAM02-LCD', 'sRGB255')
+        rgb[rgb>255.5] = np.nan
+        rgb[rgb<-0.5] = np.nan
+
+        flat_rgb = np.sum(rgb, axis = -1)
+        #flat_rgb[:,:,0] = 0
+
+        # there are some strange regsions in the limits-overview because there are 'jumps' as we go through phi
+        # therefore limit the derivative in phi
+        '''
+        for i, _ in enumerate(sat[:-1]):
+            flat_rgb[:,0,i]  +=  flat_rgb[:,-1,i]
+            flat_rgb[:,-1,i] +=  flat_rgb[:,0,i]
+            flat_rgb[:,1:,i+1]  +=  flat_rgb[:,:-1,i]
+            flat_rgb[:,:-1,i+1] +=  flat_rgb[:,1:,i]
+
+        flat_rgb[:,0,-1]  +=  flat_rgb[:,-1,-1]
+        flat_rgb[:,-1,-1] +=  flat_rgb[:,0,-1]
+        '''
+        valid = np.invert(np.isnan(flat_rgb)) + np.linspace(0,0.9,len(J))[:,np.newaxis,np.newaxis]
+        valid_argmax = np.argmax(valid, axis = 0)
+        valid_argmax[np.max(valid, axis = 0)<1] = 127
+        J_limit = J[valid_argmax]
+        J_limit_ax_2_sat = sat
+        J_limit_ax_1_phi = phi
+    return J_limit, J_limit_ax_2_sat, J_limit_ax_1_phi
+
+
+
 def set_transform(source, target):
     horz_scroll = source.horizontalScrollBar().value()
     vert_scroll = source.verticalScrollBar().value()
@@ -84,15 +255,7 @@ class MainWindow(QtWidgets.QMainWindow):
         #self.img_0.getHistogramWidget().sigLevelsChanged.connect(self.update_composite_slot)
         self.updating_colors = False
 
-        def dragEnterEvent(ev):
-            ev.accept()
 
-        self.gv_in.setAcceptDrops(True)
-        self.gv_in.dropEvent = self.image_in_drop
-        self.gv_in.dragEnterEvent = dragEnterEvent
-        self.gv_out.setAcceptDrops(True)
-        self.gv_out.dropEvent = self.image_in_drop
-        self.gv_out.dragEnterEvent = dragEnterEvent
 
 
         self.scene_in = QGraphicsScene()
@@ -102,11 +265,46 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gv_in.viewport().installEventFilter(self)
         self.gv_out.viewport().installEventFilter(self)
 
+        def accept_event(ev):
+            ev.accept()
+        for scene in [self.scene_in, self.scene_out]:
+            scene.dragEnterEvent = accept_event
+            scene.dragMoveEvent = accept_event
+            scene.dragLeaveEvent = accept_event
+
+        self.gv_in.dropEvent = self.image_in_drop
+        self.gv_out.dropEvent = self.image_in_drop
+        self.gv_in.setRenderHint(QtGui.QPainter.HighQualityAntialiasing)
+
+        #setattr(self.scene_in,'dragEnterEvent',accept_event)
+        #setattr(self.scene_in,'dragMoveEvent',accept_event)
+        #setattr(self.scene_in,'dragLeaveEvent',accept_event)
+
+        self.hist_wg = pyqtgraph.PlotWidget()
+        self.horizontalLayout_2.addWidget(self.hist_wg)
+        self.hist_wg.setFixedWidth(100)
+        self.hist_pi = self.hist_wg.getPlotItem()
+        #self.hist_pi.showAxis('right')
+        self.hist_pi.hideAxis('left')
+        self.hist_pi.hideAxis('bottom')
+        self.hist_pi.getViewBox().invertX(True)
+        self.hist_pi.setMouseEnabled(x=False) # Only allow zoom in Y-axis
+        #self.hist_plot = self.hist_pi.addPlot()
+        y, x = np.histogram([0], bins=np.linspace(12.5, 129.5, 100))
+        self.hist_curve = pyqtgraph.PlotCurveItem(-x,np.sqrt(y), stepMode='center', fillLevel=0, brush=(128,128,128,150))
+        self.hist_curve.rotate(-90)
+        self.hist_pi.addItem(self.hist_curve)
+        self.J_ROI_0 = (12.5, 129.5)
+        self.J_ROI = pyqtgraph.LinearRegionItem(values=self.J_ROI_0, brush=(128,128,128,75), hoverBrush=(128,128,128,75), orientation='horizontal', movable=True, bounds=None, span=(0, 1), swapMode='sort', clipItem=None)
+        self.hist_pi.addItem(self.J_ROI)
+        self.J_ROI.sigRegionChanged.connect(self.roiChanged)
+
+        self.limit_slider.valueChanged.connect(self.roiChanged)
+        self.downsample.valueChanged.connect(self.new_file)
 
         send_queue, return_queue = queue.Queue(), queue.Queue()
         self.rimt = rimt(send_queue, return_queue).rimt
         self.rimt_executor = RimtExecutor(send_queue, return_queue)
-        self.files = []
         self.locked = False
 
         if len(sys.argv)>1:
@@ -130,6 +328,35 @@ class MainWindow(QtWidgets.QMainWindow):
         for img in  [self.original_colorspace]:
             img.getImageItem().setLevels(self.levels)
         #colorstamps.stamps.get_sat_limts()
+        self.r = 45
+        self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)*255
+
+        self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+        # for dragging image
+        self.startPos = None
+
+        # roi stuff
+        self.roi = self.original_colorspace.roi
+        self.roi.show()
+        self.roi.setSize((256,256), update=True, finish=False)
+        self.roi.sigRegionChanged.connect(self.roiChanged)
+        self.roi.removeHandle(0)
+        self.roi.addScaleHandle([1, 1], [0.5, 0.5])
+        self.roi.invertible = True
+
+        # pic item
+        pic = QGraphicsPixmapItem()
+        #self.scene.setSceneRect(0, 0, 400, 400)
+        self.scene_in.addItem(pic)
+        self.in_pic = pic
+        self.in_pic.setTransformationMode(QtCore.Qt.SmoothTransformation)
+
+        pic = QGraphicsPixmapItem()
+        #self.scene.setSceneRect(0, 0, 400, 400)
+        self.scene_out.addItem(pic)
+        self.out_pic = pic
+        self.out_pic.setTransformationMode(QtCore.Qt.SmoothTransformation)
+
 
         file = '/home/trygvrad/colorshifter/Screenshot from 2022-09-06 11-03-52.png'
         self.new_file(file)
@@ -151,15 +378,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def eventFilter(self, source, event):
-        check = source == self.gv_in.viewport()
-        check = check or source == self.gv_out.viewport()
-        check = check and event.type() == QtCore.QEvent.Wheel
-        if check:
-            gv = self.gv_in
-            gv2 = self.gv_out
-            if source == self.gv_out.viewport():
-                gv = self.gv_out
-                gv2 = self.gv_in
+        gv = self.gv_in
+        gv2 = self.gv_out
+
+        if source == self.gv_out.viewport():
+            gv = self.gv_out
+            gv2 = self.gv_in
+        if source == gv.viewport() and event.type() == QtCore.QEvent.Wheel:
             if event.angleDelta().y() > 0:
                 scale = 1.125
             else:
@@ -175,8 +400,35 @@ class MainWindow(QtWidgets.QMainWindow):
             set_transform(gv, gv2)
             # do not propagate the event to the scroll area scrollbars
             return True
-            #elif event.type() == QtCore.QEvent.GraphicsSceneMousePress:
-            #...
+        elif source == gv.viewport() and event.type() == QtCore.QEvent.MouseButtonPress:
+            self.startPos = np.array([event.pos().x(),event.pos().y()], dtype = np.float64)
+            self.start_gv = gv
+            self.other_gv = gv2
+            return True
+        elif (self.startPos is not None) and event.type() == QtCore.QEvent.MouseMove:
+            # compute the difference between the current cursor position and the
+            # previous saved origin point
+            delta = self.startPos - np.array([event.pos().x(),event.pos().y()], dtype = np.float64)
+            # get the current transformation (which is a matrix that includes the
+            # scaling ratios
+            transform = self.start_gv.transform()
+            # m11 refers to the horizontal scale, m22 to the vertical scale;
+            # divide the delta by their corresponding ratio
+            deltaX = delta[0] #/ transform.m11()
+            deltaY = delta[1] #/ transform.m22()
+            # translate the current sceneRect by the delta
+            horz_scroll = self.start_gv.horizontalScrollBar().value()
+            vert_scroll = self.start_gv.verticalScrollBar().value()
+            self.start_gv.horizontalScrollBar().setValue(horz_scroll+int(deltaX))
+            self.start_gv.verticalScrollBar().setValue(vert_scroll+int(deltaY))
+            self.other_gv.horizontalScrollBar().setValue(horz_scroll+int(deltaX))
+            self.other_gv.verticalScrollBar().setValue(vert_scroll+int(deltaY))
+            self.startPos += np.array([horz_scroll-self.start_gv.horizontalScrollBar().value(),
+                                       vert_scroll-self.start_gv.verticalScrollBar().value()]) #*transform.m11()
+            return True
+        elif (self.startPos is not None) and event.type() == QtCore.QEvent.MouseButtonRelease:
+            self.startPos = None
+            return True
         return super().eventFilter(source,event)
 
     def array_to_QPixmap(self,img):
@@ -186,36 +438,44 @@ class MainWindow(QtWidgets.QMainWindow):
         qpixmap = QPixmap(qimg)
         return qpixmap
 
-    def new_file(self,file):
+    def new_file(self,file = None):
+        if type(file) != type(''):
+            if hasattr(self,'file'):
+                file = self.file
+            else:
+                return
+        self.file = file
+        print(file)
+        print(self.file)
         formats = ['png','jpg','jpeg']
         if file.split('.')[-1] in formats :
             downsample = self.downsample.value()
             image = np.array(Image.open(file))[::downsample, ::downsample,:3]
 
-            pic = QGraphicsPixmapItem()
-            pic.setPixmap(self.array_to_QPixmap(np.array(image)))
-            #self.scene.setSceneRect(0, 0, 400, 400)
-            self.scene_in.addItem(pic)
-            pic = QGraphicsPixmapItem()
-            pic.setPixmap(self.array_to_QPixmap(np.array(image)))
-            #self.scene.setSceneRect(0, 0, 400, 400)
-            self.scene_out.addItem(pic)
-
+            self.in_pic.setPixmap(self.array_to_QPixmap(np.array(image)))
+            self.out_pic.setPixmap(self.array_to_QPixmap(np.array(image)))
             #self.image_in.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
             #self.image_out.getImageItem().setImage(np.transpose(image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
 
             #v0 = self.image_in.getView()
             #self.image_out.getView().setXLink(v0)
             #self.image_out.getView().setYLink(v0)
-            self.r = 45
-            self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)*255
-
-            self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
 
             v0 = self.original_colorspace.getView()
 
             Jab = colorspacious.cspace_convert(image[:,:,:3], 'sRGB255', 'CAM02-LCD')
             self.Jab = Jab
+
+            y, x = np.histogram(Jab[:,:,0].ravel(), bins=np.linspace(12.5, 129.5, 100))
+            self.hist_curve.setData(-x,y)
+            #curve = pyqtgraph.PlotCurveItem(-x,np.sqrt(y), stepMode=True, fillLevel=0, brush=(128,128,128,150))
+            #curve.rotate(-90)
+            #self.hist_pi.addItem(curve)
+
+            #J_ROI = pyqtgraph.LinearRegionItem(values=(12.5, 129.5), brush=(128,128,128,75), hoverBrush=(128,128,128,75), orientation='horizontal', movable=True, bounds=None, span=(0, 1), swapMode='sort', clipItem=None)
+            #self.hist_pi.addItem(J_ROI)
+
+
             a_1 = np.linspace(-self.r, self.r,256)
             d2 = 0.5*(a_1[1]-a_1[0])
             range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
@@ -241,10 +501,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.ori_curves.append(c)
                 self.original_colorspace.addItem(c)
 
-            self.roi = self.original_colorspace.roi
-            self.roi.show()
-            self.roi.setSize((256,256), update=True, finish=False)
-            self.roi.sigRegionChanged.connect(self.roiChanged)
+            self.update_img()
+            #self.roi.mouseDragHandler.mouseDragEvent = self.mouseDragEvent
+            #self.roi.mouseDragEvent = self.mouseDragEvent
 
 
     def roiChanged(self):
@@ -263,6 +522,11 @@ class MainWindow(QtWidgets.QMainWindow):
                   pos[1] +size[0]/2*s +size[1]/2*c]
         Jab = np.copy(self.Jab) #colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
 
+        jlim = self.J_ROI.getRegion()
+        Jab[:,:,0] -= self.J_ROI_0[0]
+        Jab[:,:,0] *= (self.J_ROI_0[1]-self.J_ROI_0[0])/(jlim[1]-jlim[0])
+        Jab[:,:,0] += jlim[0]
+
         # scale
         Jab[:,:,1] *= size[1]/256
         Jab[:,:,2] *= size[0]/256
@@ -273,12 +537,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # shift center
         Jab[:,:,1] += (center[1]-128)*self.r/128
         Jab[:,:,2] += (center[0]-128)*self.r/128
-        colorstamps.stamps.apply_sat_limit(Jab,'individual')
-
+        apply_sat_limit(limited_Jab := np.copy(Jab),'individual')
+        apply_J_limit(Jab,'individual')
+        f = float(self.limit_slider.value())/100
+        Jab = (1-f)*Jab + f*limited_Jab
         shifted_image = colorspacious.cspace_convert(Jab, 'CAM02-LCD', 'sRGB255')
         shifted_image[shifted_image>255] = 255
         shifted_image[shifted_image<0] = 0
-        self.image_out.getImageItem().setImage(np.transpose(shifted_image, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+
+
+        self.out_pic.setPixmap(self.array_to_QPixmap(np.array(np.round(shifted_image), dtype = np.uint8)))
+        #self.scene.setSceneRect(0, 0, 400, 400)
 
 
         a_1 = np.linspace(-self.r, self.r,256)
@@ -305,77 +574,107 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fit_curves.append(c)
             self.original_colorspace.addItem(c)
 
-    '''
-    def update_composite(self):
-        self.updating_colors = False
-        if (self.img_0.has_img and self.img_1.has_img):
-            imgs = []
-            for i, img in enumerate([self.img_0, self.img_1]):
-                levels = img.getHistogramWidget().getLevels()
-                imgs.append(np.array(255*(img.img-levels[0])/(levels[1]-levels[0]), dtype = int))
-                imgs[-1][imgs[-1]>255] = 255
-                imgs[-1][ imgs[-1]<0 ] = 0
-            if self.num_colors == 2:
-                self.RGB = self.stamp[imgs[0], imgs[1]]
-                self.composite.getImageItem().setImage(self.RGB, axisOrder = 'row-major')
-            else:
-                if self.img_2.has_img:
-                    img = self.img_2
-                    levels = img.getHistogramWidget().getLevels()
-                    imgs.append(np.array(255*(img.img-levels[0])/(levels[1]-levels[0]), dtype = int))
-                    imgs[-1][imgs[-1]>255] = 255
-                    imgs[-1][ imgs[-1]<0 ] = 0
-                    self.RGB = self.stamp_not_inv[0][imgs[0]] + self.stamp_not_inv[1][imgs[1]]  + self.stamp_not_inv[2][imgs[2]]
-                    if self.invert_check.isChecked():
-                        self.RGB = 255-self.RGB
-                    self.RGB[self.RGB>255] = 255
-                    self.RGB[self.RGB<0 ] = 0
 
-                    self.composite.getImageItem().setImage(self.RGB, axisOrder = 'row-major')
-    '''
 
     @QtCore.pyqtSlot(object)
     def update_composite_slot(self, *args):
         if self.updating_colors == False:
             self.updating_colors = True
-            QtCore.QTimer.singleShot(250, self.update_composite)
-    '''
-    def cmap_changed_slot(self, i):
-        cmap = self.cmap_selector.currentText()
-        self.mpl_fig.clf()
-        self.stamp = self.get_stamp()
-        if self.num_colors == 2:
-            self.mpl_ax = self.mpl_fig.subplots()
-            self.mpl_ax.imshow(self.stamp, origin = 'lower')
-            self.mpl_ax.set_xticks([])
-            self.mpl_ax.set_yticks([])
-            self.img_0.setColorMap(pyqtgraph.ColorMap(pos=np.linspace(0.0, 1.0, 256), color=self.stamp[:,0]))
-            self.img_1.setColorMap(pyqtgraph.ColorMap(pos=np.linspace(0.0, 1.0, 256), color=self.stamp[0,:]))
-            #self.mpl_fig.tight_layout()
-        else: # self.num_colors == 3:
-            self.mpl_ax = self.mpl_fig.subplots(1,3)
-            for ax in self.mpl_ax:
-                ax.set_xticks([])
-                ax.set_yticks([])
-            self.mpl_ax[0].imshow(self.stamp[0][:,np.newaxis,:]*np.ones((256,20,3), dtype = int), origin = 'lower')
-            self.img_0.setColorMap(pyqtgraph.ColorMap(pos=np.linspace(0.0, 1.0, 256), color=self.stamp[0]))
-            self.mpl_ax[1].imshow(self.stamp[1][:,np.newaxis,:]*np.ones((256,20,3), dtype = int), origin = 'lower')
-            self.img_1.setColorMap(pyqtgraph.ColorMap(pos=np.linspace(0.0, 1.0, 256), color=self.stamp[1]))
-            self.mpl_ax[2].imshow(self.stamp[2][:,np.newaxis,:]*np.ones((256,20,3), dtype = int), origin = 'lower')
-            self.img_2.setColorMap(pyqtgraph.ColorMap(pos=np.linspace(0.0, 1.0, 256), color=self.stamp[2]))
-        # hide ticks
-        self.img_0.ui.histogram.gradient.showTicks(False)
-        self.img_1.ui.histogram.gradient.showTicks(False)
-        self.img_2.ui.histogram.gradient.showTicks(False)
-        self.mpl_fig.canvas.draw()
-        self.update_composite()
+            QtCore.QTimer.singleShot(10, self.update_composite)
 
-        cmap = self.cmap_selector.currentText()
-        if not (cmap == 'Custom' or cmap == '2 Color custom'):
-            if self.num_colors == 2:
-                self.color_0 = self.stamp[255, 0]
-                self.color_1 = self.stamp[0, 255]
     '''
+
+    def mouseDragEvent(self, ev):
+        print(1)
+        if ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        ev.accept()
+        self = self.roi
+        ## Inform ROIs that a drag is happening
+        ##  note: the ROI is informed that the handle has moved using ROI.movePoint
+        ##  this is for other (more nefarious) purposes.
+        #for r in self.roi:
+            #r[0].pointDragEvent(r[1], ev)
+
+        if ev.isFinish():
+            if self.isMoving:
+                for r in self.rois:
+                    r.stateChangeFinished()
+            self.isMoving = False
+            self.currentPen = self.pen
+            self.update()
+        elif ev.isStart():
+            for r in self.rois:
+                r.handleMoveStarted()
+            self.isMoving = True
+            self.startPos = self.scenePos()
+            self.cursorOffset = self.scenePos() - ev.buttonDownScenePos()
+            self.currentPen = self.hoverPen
+
+        if self.isMoving:  ## note: isMoving may become False in mid-drag due to right-click.
+            pos = ev.scenePos() + self.cursorOffset
+            self.currentPen = self.hoverPen
+            self.movePoint(pos, ev.modifiers(), finish=False)
+    def mouseDragEvent(self,ev):
+        roi = self.roi
+        mdh = roi.mouseDragHandler
+
+        print('5')
+        if ev.isStart():
+            if ev.button() == QtCore.Qt.MouseButton.LeftButton:
+                roi.setSelected(True)
+                mods = ev.modifiers() & ~mdh.snapModifier
+                if roi.translatable and mods == mdh.translateModifier:
+                    mdh.dragMode = 'translate'
+                elif roi.rotatable and mods == mdh.rotateModifier:
+                    mdh.dragMode = 'rotate'
+                elif roi.resizable and mods == mdh.scaleModifier:
+                    mdh.dragMode = 'scale'
+                else:
+                    mdh.dragMode = None
+
+                if mdh.dragMode is not None:
+                    roi._moveStarted()
+                    mdh.startPos = roi.mapToParent(ev.buttonDownPos())
+                    mdh.startState = roi.saveState()
+                    mdh.cursorOffset = roi.pos() - mdh.startPos
+                    print('1')
+                    ev.accept()
+                else:
+                    ev.ignore()
+            else:
+                mdh.dragMode = None
+                ev.ignore()
+
+
+        print('4')
+        if ev.isFinish() and mdh.dragMode is not None:
+            roi._moveFinished()
+            return
+
+        # roi.isMoving becomes False if the move was cancelled by right-click
+        if not roi.isMoving or mdh.dragMode is None:
+            return
+
+        print('3')
+        snap = True if (ev.modifiers() & mdh.snapModifier) else None
+        pos = roi.mapToParent(ev.pos())
+        if mdh.dragMode == 'translate':
+            newPos = pos + mdh.cursorOffset
+            roi.translate(newPos - roi.pos(), snap=snap, finish=False)
+        elif mdh.dragMode == 'rotate':
+            diff = mdh.rotateSpeed * (ev.scenePos() - ev.buttonDownScenePos()).x()
+            angle = mdh.startState['angle'] - diff
+            roi.setAngle(angle, centerLocal=ev.buttonDownPos(), snap=snap, finish=False)
+        elif mdh.dragMode == 'scale':
+            print('2')
+            diff = mdh.scaleSpeed ** -(ev.scenePos() - ev.buttonDownScenePos()).y()
+            roi.setSize(Point(mdh.startState['size']) * diff, centerLocal=ev.buttonDownPos(), snap=snap, finish=False)
+            '''
+
+
+
+
 import queue
 import functools
 class rimt():
