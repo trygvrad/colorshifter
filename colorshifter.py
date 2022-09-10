@@ -207,8 +207,8 @@ def set_transform(source, target):
     #target.horizontalScrollBar().blockSignals(horz_blocked)
     #target.verticalScrollBar().blockSignals(vert_blocked)
 
-def make_update(main_window, Jab, pos, size, angle, jlim, ang, limit_s):
-    Jab = np.copy(self.Jab) #colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
+def make_update(main_window, Jab, pos, size, angle, jlim, ang, limit_s, curve_levels):
+    Jab = np.copy(Jab) #colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
 
     c = np.cos(angle*np.pi/180)
     s = np.sin(angle*np.pi/180)
@@ -238,56 +238,61 @@ def make_update(main_window, Jab, pos, size, angle, jlim, ang, limit_s):
     shifted_image[shifted_image>255] = 255
     shifted_image[shifted_image<0] = 0
 
-    #self.scene.setSceneRect(0, 0, 400, 400)
+    return shifted_image, make_curves(Jab, ang, curve_levels)[0]
 
+def make_curves(Jab, ang, levels = None):
     a_1 = np.linspace(-SATURATION_R, SATURATION_R,256)
     d2 = 0.5*(a_1[1]-a_1[0])
     range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
     hist, xedges, yedges = np.histogram2d(Jab[:,:,1].ravel(), Jab[:,:,2].ravel(),
             bins=256, range=range, normed=None, weights=None, density=None)
-    hist = scipy.ndimage.gaussian_filter(hist, 3)
-    #hist = np.log(hist+0.1)
-    hist = np.sqrt(hist)
+    hist = scipy.ndimage.gaussian_filter(hist, 1)
 
-
-    levels = np.linspace(hist.min(), hist.max(), 7)
+    if levels == None:
+        levels = [np.percentile(hist,85),np.percentile(hist,93), np.percentile(hist,97),np.percentile(hist,99),np.percentile(hist,99.5),np.percentile(hist,99.75)]
+    data = hist.T
+    mask, corner_mask, nchunk = None, True, 0
+    xx, yy = np.meshgrid(np.arange(256), np.arange(256))
+    qcg = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
     curves = []
-    for i, v in enumerate(levels[1:-1]):
+    for i, v in enumerate(levels):
         ## generate isocurve with automatic color selection
-        data = hist.T
-        mask, corner_mask, nchunk = None, True, 0
-        xx, yy = np.meshgrid(np.arange(256), np.arange(256))
-        c = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
-        res = c.create_contour(v)[0]
-        res -= 128
-        s = np.sin(-ang*2*np.pi/360)
-        c = np.cos(-ang*2*np.pi/360)
-        x        = res[:,0]*c - res[:,1]*s
-        res[:,1] = res[:,0]*s + res[:,1]*c
-        res[:,0] = x
-        res += 128
-        #c = pyqtgraph.IsocurveItem(data =data,  level=v, pen=[0,0,0])
-        #c.setZValue(100)
-        curves.append(res)
-
-    main_window.apply_update(shifted_image, curves)
-
+        v = np.max([v,1])
+        reses = qcg.create_contour(v)
+        for res in reses:
+            res -= 128
+            s = np.sin(-ang*2*np.pi/360)
+            c = np.cos(-ang*2*np.pi/360)
+            x        = res[:,0]*c - res[:,1]*s
+            res[:,1] = res[:,0]*s + res[:,1]*c
+            res[:,0] = x
+            res += 128
+            #c = pyqtgraph.IsocurveItem(data =data,  level=v, pen=[0,0,0])
+            #c.setZValue(100)
+            curves.append(res)
+    return curves, levels
 
 class UpdateComputer(threading.Thread):
-    def __init__(self, main_window, in_queue, out_queue):
+    def __init__(self, main_window, work_queue):
         self.main_window = main_window
-        self.in_queue = in_queue
-        self.out_queue = out_queue
-
+        self.work_queue = work_queue
+        threading.Thread.__init__(self)
     def run(self):
         while True:
-            work = self.in_queue.get()
+            work = self.work_queue.get()
             if work[0] == 'end':
-                break
-            elif work[0] === 'update':
-                pos, size, angle, jlim, ang, limit_s = *work[1:]
-                make_update(self, self.main_window.Jab, pos, size, angle, jlim, ang, limit_s)
-                
+                return
+            while not self.work_queue.empty():
+                work = self.work_queue.get()
+                if work[0] == 'end':
+                    return
+            if work[0] == 'update':
+                pos, size, angle, jlim, ang, limit_s = work[1:]
+                main_window.shifted_image, main_window.new_curves = make_update(self, self.main_window.Jab, pos, size, angle, jlim, ang, limit_s, self.main_window.curve_levels)
+                #main_window.shifted_image = shifted_image
+                #main_window.new_curves
+                self.main_window.rimt(main_window.apply_update)
+
 def rot( Jab, ang):
     #phi = np.arctan2(Jab[:,:,1], Jab[:,:,2])+ang
     #sat = np.sqrt(Jab[:,:,1]**2 + Jab[:,:,2]**2)
@@ -403,6 +408,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rimt_executor = RimtExecutor(send_queue, return_queue)
         self.locked = False
 
+        self.work_queue = queue.Queue()
+        uc = UpdateComputer(self, self.work_queue)
+        uc.start()
+
+
         if len(sys.argv)>1:
             file = sys.argv[1]
             self.new_file(file)
@@ -414,7 +424,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ### saving
         self.date_today=str(datetime.date.today())
         self.output_int = 1
-        while (os.path.exists(f'output/{self.date_today}/{self.output_int}.png')):
+        while os.path.exists(f'output/{self.date_today}/{self.output_int}'+'.png') or os.path.exists(f'output/{self.date_today}/{self.output_int}'+'.jpg'):
             self.output_int += 1
         self.path.setText(f'output/{self.date_today}/{self.output_int}')
         self.updating_img = False
@@ -457,19 +467,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.new_file(file)
 
     def save_clicked(self,event):
-        file = self.path.text()
-        os.makedirs('/'.join(file.split('/')[:-1]), exist_ok = True)
-        if hasattr(self, 'RGB'):
-            import matplotlib.pyplot
-            matplotlib.pyplot.imsave(file+'.png', self.RGB.astype(np.uint8))
-            matplotlib.pyplot.imsave(file+'.jpg', self.RGB.astype(np.uint8))
-            self.mpl_fig.savefig(file+'_stamp.png', transparent=True)
+        filepath = self.path.text()
+        os.makedirs('/'.join(filepath.split('/')[:-1]), exist_ok = True)
+        image = np.array(Image.open(self.file))
+
+        Jab = colorspacious.cspace_convert(image[:,:,:3], 'sRGB255', 'CAM02-LCD')
+        pos = self.roi.pos()
+        size = self.roi.size()
+        angle = self.roi.angle()
+        jlim = self.J_ROI.getRegion()
+        ang = self.rotation.value()
+        limit_s = float(self.limit_slider.value())/100
+        shifted_image, _ = make_update(self, Jab, pos, size, angle, jlim, ang, limit_s, self.curve_levels)
+
+        image[:,:,:3] = shifted_image
+        o_image = Image.fromarray(np.array(np.round(image), dtype = np.uint8))
+        o_image.save(filepath+'.'+self.file.split('.')[-1])
+
+        if filepath == f'output/{self.date_today}/{self.output_int}':
+            self.output_int += 1
+            self.path.setText(f'output/{self.date_today}/{self.output_int}')
+
+
+
 
 
     def image_in_drop(self, event):
         files = [u.toLocalFile() for u in event.mimeData().urls()]
         file = files[0]
         self.new_file(file)
+
 
 
     def eventFilter(self, source, event):
@@ -579,15 +606,7 @@ class MainWindow(QtWidgets.QMainWindow):
             #J_ROI = pyqtgraph.LinearRegionItem(values=(12.5, 129.5), brush=(128,128,128,75), hoverBrush=(128,128,128,75), orientation='horizontal', movable=True, bounds=None, span=(0, 1), swapMode='sort', clipItem=None)
             #self.hist_pi.addItem(J_ROI)
 
-
-            a_1 = np.linspace(-SATURATION_R, SATURATION_R,256)
-            d2 = 0.5*(a_1[1]-a_1[0])
-            range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
-            hist, xedges, yedges = np.histogram2d(Jab[:,:,1].ravel(), Jab[:,:,2].ravel(),
-                    bins=256, range=range, normed=None, weights=None, density=None)
-            hist = scipy.ndimage.gaussian_filter(hist, 3)
             #hist = np.log(hist+0.1)
-            hist = np.sqrt(hist)
 
             if hasattr(self, 'ori_curves'):
                 for c in self.ori_curves:
@@ -596,12 +615,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self.ori_curves = []
 
-            levels = np.linspace(hist.min(), hist.max(), 7)
-            for i, v in enumerate(levels[1:-1]):
-                ## generate isocurve with automatic color selection
-                c = pyqtgraph.IsocurveItem(data =hist.T,  level=v, pen="w")
+            curves, self.curve_levels = make_curves(Jab, ang)
+            for res in curves:
+                c =  pyqtgraph.PlotDataItem(res[:,1], res[:,0], pen='w')
                 c.setParentItem(self.original_colorspace.getImageItem())  ## make sure isocurve is always correctly displayed over image
-                c.setZValue(100)
                 self.ori_curves.append(c)
                 self.original_colorspace.addItem(c)
 
@@ -624,20 +641,20 @@ class MainWindow(QtWidgets.QMainWindow):
         ang = self.rotation.value()
 
         limit_s = float(self.limit_slider.value())/100
+        self.work_queue.put(['update', pos, size, angle, jlim, ang, limit_s])
+        #make_update(self, Jab, pos, size, angle, jlim, ang, limit_s)
 
-        make_update(self, Jab, pos, size, angle, jlim, ang, limit_s)
-
-    def apply_update(self, shifted_image, curves):
+    def apply_update(self):
         if hasattr(self, 'fit_curves'):
             for c in self.fit_curves:
                 self.original_colorspace.removeItem(c)
         self.fit_curves = []
-        for res in curves:
-            c =  pyqtgraph.PlotDataItem(res[:,1], res[:,0])
+        for res in self.new_curves:
+            c =  pyqtgraph.PlotDataItem(res[:,1], res[:,0], pen=[0,0,0])
             c.setParentItem(self.original_colorspace.getImageItem())  ## make sure isocurve is always correctly displayed over image
             self.fit_curves.append(c)
             self.original_colorspace.addItem(c)
-        self.out_pic.setPixmap(self.array_to_QPixmap(np.array(np.round(shifted_image), dtype = np.uint8)))
+        self.out_pic.setPixmap(self.array_to_QPixmap(np.array(np.round(self.shifted_image), dtype = np.uint8)))
 
 
 
@@ -646,7 +663,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.updating_colors == False:
             self.updating_colors = True
             QtCore.QTimer.singleShot(10, self.update_composite)
-
+    def closeEvent(self, event):
+        self.work_queue.put(['end'])
 
 
 import queue
