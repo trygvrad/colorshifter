@@ -17,6 +17,8 @@ import threading
 import queue
 
 
+SATURATION_R = 45
+
 def dragEnterEvent(self, event):
     event.accept()
 def dragMoveEvent(self, event):
@@ -205,6 +207,97 @@ def set_transform(source, target):
     #target.horizontalScrollBar().blockSignals(horz_blocked)
     #target.verticalScrollBar().blockSignals(vert_blocked)
 
+def make_update(main_window, Jab, pos, size, angle, jlim, ang, limit_s):
+    Jab = np.copy(self.Jab) #colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
+
+    c = np.cos(angle*np.pi/180)
+    s = np.sin(angle*np.pi/180)
+    center = [pos[0] +size[0]/2*c -size[1]/2*s,
+              pos[1] +size[0]/2*s +size[1]/2*c]
+    J_ROI_0 = (12.5, 129.5)
+    Jab[:,:,0] -= J_ROI_0[0]
+    Jab[:,:,0] *= (J_ROI_0[1]-J_ROI_0[0])/(jlim[1]-jlim[0])
+    Jab[:,:,0] += jlim[0]
+
+    # scale
+    Jab[:,:,1] *= size[1]/256
+    Jab[:,:,2] *= size[0]/256
+    # rotate
+    a          = c*Jab[:,:,1]+s*Jab[:,:,2]
+    Jab[:,:,2] = -s*Jab[:,:,1]+c*Jab[:,:,2]
+    Jab[:,:,1] = a
+    # shift center
+    Jab[:,:,1] += (center[1]-128)*SATURATION_R/128
+    Jab[:,:,2] += (center[0]-128)*SATURATION_R/128
+
+    rot(Jab, ang)
+    apply_sat_limit(limited_Jab := np.copy(Jab),'individual')
+    apply_J_limit(Jab,'individual')
+    Jab = (1-limit_s)*Jab + limit_s*limited_Jab
+    shifted_image = colorspacious.cspace_convert(Jab, 'CAM02-LCD', 'sRGB255')
+    shifted_image[shifted_image>255] = 255
+    shifted_image[shifted_image<0] = 0
+
+    #self.scene.setSceneRect(0, 0, 400, 400)
+
+    a_1 = np.linspace(-SATURATION_R, SATURATION_R,256)
+    d2 = 0.5*(a_1[1]-a_1[0])
+    range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
+    hist, xedges, yedges = np.histogram2d(Jab[:,:,1].ravel(), Jab[:,:,2].ravel(),
+            bins=256, range=range, normed=None, weights=None, density=None)
+    hist = scipy.ndimage.gaussian_filter(hist, 3)
+    #hist = np.log(hist+0.1)
+    hist = np.sqrt(hist)
+
+
+    levels = np.linspace(hist.min(), hist.max(), 7)
+    curves = []
+    for i, v in enumerate(levels[1:-1]):
+        ## generate isocurve with automatic color selection
+        data = hist.T
+        mask, corner_mask, nchunk = None, True, 0
+        xx, yy = np.meshgrid(np.arange(256), np.arange(256))
+        c = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
+        res = c.create_contour(v)[0]
+        res -= 128
+        s = np.sin(-ang*2*np.pi/360)
+        c = np.cos(-ang*2*np.pi/360)
+        x        = res[:,0]*c - res[:,1]*s
+        res[:,1] = res[:,0]*s + res[:,1]*c
+        res[:,0] = x
+        res += 128
+        #c = pyqtgraph.IsocurveItem(data =data,  level=v, pen=[0,0,0])
+        #c.setZValue(100)
+        curves.append(res)
+
+    main_window.apply_update(shifted_image, curves)
+
+
+class UpdateComputer(threading.Thread):
+    def __init__(self, main_window, in_queue, out_queue):
+        self.main_window = main_window
+        self.in_queue = in_queue
+        self.out_queue = out_queue
+
+    def run(self):
+        while True:
+            work = self.in_queue.get()
+            if work[0] == 'end':
+                break
+            elif work[0] === 'update':
+                pos, size, angle, jlim, ang, limit_s = *work[1:]
+                make_update(self, self.main_window.Jab, pos, size, angle, jlim, ang, limit_s)
+                
+def rot( Jab, ang):
+    #phi = np.arctan2(Jab[:,:,1], Jab[:,:,2])+ang
+    #sat = np.sqrt(Jab[:,:,1]**2 + Jab[:,:,2]**2)
+    s = np.sin(ang*2*np.pi/360)
+    c = np.cos(ang*2*np.pi/360)
+    a = Jab[:,:,1]*c - Jab[:,:,2]*s
+    Jab[:,:,2] = Jab[:,:,1]*s + Jab[:,:,2]*c
+    Jab[:,:,1] = a
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, *args, **kwargs):
         pyqtgraph.setConfigOption('background', 'w')
@@ -331,8 +424,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for img in  [self.original_colorspace]:
             img.getImageItem().setLevels(self.levels)
         #colorstamps.stamps.get_sat_limts()
-        self.r = 45
-        self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)*255
+        self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=SATURATION_R, l=256, mask='no_mask', rot=0)*255
 
         #self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
         # for dragging image
@@ -444,14 +536,6 @@ class MainWindow(QtWidgets.QMainWindow):
         qpixmap = QPixmap(qimg)
         return qpixmap
 
-    def rot(self, Jab, ang):
-        #phi = np.arctan2(Jab[:,:,1], Jab[:,:,2])+ang
-        #sat = np.sqrt(Jab[:,:,1]**2 + Jab[:,:,2]**2)
-        s = np.sin(ang*2*np.pi/360)
-        c = np.cos(ang*2*np.pi/360)
-        a = Jab[:,:,1]*c - Jab[:,:,2]*s
-        Jab[:,:,2] = Jab[:,:,1]*s + Jab[:,:,2]*c
-        Jab[:,:,1] = a
 
     def new_file(self,file = None):
         if type(file) != type(''):
@@ -478,11 +562,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
             Jab = colorspacious.cspace_convert(image[:,:,:3], 'sRGB255', 'CAM02-LCD')
             ang = self.rotation.value()
-            self.rot(Jab, -ang)
+            rot(Jab, -ang)
             self.Jab = Jab
 
             self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1),
-                                            r=self.r, l=256, mask='no_mask', rot=-ang)*255
+                                            r=SATURATION_R, l=256, mask='no_mask', rot=-ang)*255
             self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), levelMode = 'rgb')
 
 
@@ -496,7 +580,7 @@ class MainWindow(QtWidgets.QMainWindow):
             #self.hist_pi.addItem(J_ROI)
 
 
-            a_1 = np.linspace(-self.r, self.r,256)
+            a_1 = np.linspace(-SATURATION_R, SATURATION_R,256)
             d2 = 0.5*(a_1[1]-a_1[0])
             range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
             hist, xedges, yedges = np.histogram2d(Jab[:,:,1].ravel(), Jab[:,:,2].ravel(),
@@ -536,79 +620,24 @@ class MainWindow(QtWidgets.QMainWindow):
         pos = self.roi.pos()
         size = self.roi.size()
         angle = self.roi.angle()
-        c = np.cos(angle*np.pi/180)
-        s = np.sin(angle*np.pi/180)
-        center = [pos[0] +size[0]/2*c -size[1]/2*s,
-                  pos[1] +size[0]/2*s +size[1]/2*c]
-        Jab = np.copy(self.Jab) #colorspacious.cspace_convert(self.image[:,:,:3], 'sRGB255', 'CAM02-LCD')
-
         jlim = self.J_ROI.getRegion()
-        Jab[:,:,0] -= self.J_ROI_0[0]
-        Jab[:,:,0] *= (self.J_ROI_0[1]-self.J_ROI_0[0])/(jlim[1]-jlim[0])
-        Jab[:,:,0] += jlim[0]
-
-        # scale
-        Jab[:,:,1] *= size[1]/256
-        Jab[:,:,2] *= size[0]/256
-        # rotate
-        a          = c*Jab[:,:,1]+s*Jab[:,:,2]
-        Jab[:,:,2] = -s*Jab[:,:,1]+c*Jab[:,:,2]
-        Jab[:,:,1] = a
-        # shift center
-        Jab[:,:,1] += (center[1]-128)*self.r/128
-        Jab[:,:,2] += (center[0]-128)*self.r/128
-
         ang = self.rotation.value()
-        self.rot(Jab, ang)
-        apply_sat_limit(limited_Jab := np.copy(Jab),'individual')
-        apply_J_limit(Jab,'individual')
-        f = float(self.limit_slider.value())/100
-        Jab = (1-f)*Jab + f*limited_Jab
-        shifted_image = colorspacious.cspace_convert(Jab, 'CAM02-LCD', 'sRGB255')
-        shifted_image[shifted_image>255] = 255
-        shifted_image[shifted_image<0] = 0
 
+        limit_s = float(self.limit_slider.value())/100
 
-        self.out_pic.setPixmap(self.array_to_QPixmap(np.array(np.round(shifted_image), dtype = np.uint8)))
-        #self.scene.setSceneRect(0, 0, 400, 400)
+        make_update(self, Jab, pos, size, angle, jlim, ang, limit_s)
 
-
-        a_1 = np.linspace(-self.r, self.r,256)
-        d2 = 0.5*(a_1[1]-a_1[0])
-        range = [[a_1[0]-d2, a_1[-1]-d2], [a_1[0]-d2, a_1[-1]-d2]]
-        hist, xedges, yedges = np.histogram2d(Jab[:,:,1].ravel(), Jab[:,:,2].ravel(),
-                bins=256, range=range, normed=None, weights=None, density=None)
-        hist = scipy.ndimage.gaussian_filter(hist, 3)
-        #hist = np.log(hist+0.1)
-        hist = np.sqrt(hist)
-
+    def apply_update(self, shifted_image, curves):
         if hasattr(self, 'fit_curves'):
             for c in self.fit_curves:
                 self.original_colorspace.removeItem(c)
-
         self.fit_curves = []
-
-        levels = np.linspace(hist.min(), hist.max(), 7)
-        for i, v in enumerate(levels[1:-1]):
-            ## generate isocurve with automatic color selection
-            data = hist.T
-            mask, corner_mask, nchunk = None, True, 0
-            xx, yy = np.meshgrid(np.arange(256), np.arange(256))
-            c = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
-            res = c.create_contour(v)[0]
-            res -= 128
-            s = np.sin(-ang*2*np.pi/360)
-            c = np.cos(-ang*2*np.pi/360)
-            x        = res[:,0]*c - res[:,1]*s
-            res[:,1] = res[:,0]*s + res[:,1]*c
-            res[:,0] = x
-            res += 128
-            #c = pyqtgraph.IsocurveItem(data =data,  level=v, pen=[0,0,0])
-            #c.setZValue(100)
+        for res in curves:
             c =  pyqtgraph.PlotDataItem(res[:,1], res[:,0])
             c.setParentItem(self.original_colorspace.getImageItem())  ## make sure isocurve is always correctly displayed over image
             self.fit_curves.append(c)
             self.original_colorspace.addItem(c)
+        self.out_pic.setPixmap(self.array_to_QPixmap(np.array(np.round(shifted_image), dtype = np.uint8)))
 
 
 
@@ -617,97 +646,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.updating_colors == False:
             self.updating_colors = True
             QtCore.QTimer.singleShot(10, self.update_composite)
-
-    '''
-
-    def mouseDragEvent(self, ev):
-        print(1)
-        if ev.button() != QtCore.Qt.MouseButton.LeftButton:
-            return
-        ev.accept()
-        self = self.roi
-        ## Inform ROIs that a drag is happening
-        ##  note: the ROI is informed that the handle has moved using ROI.movePoint
-        ##  this is for other (more nefarious) purposes.
-        #for r in self.roi:
-            #r[0].pointDragEvent(r[1], ev)
-
-        if ev.isFinish():
-            if self.isMoving:
-                for r in self.rois:
-                    r.stateChangeFinished()
-            self.isMoving = False
-            self.currentPen = self.pen
-            self.update()
-        elif ev.isStart():
-            for r in self.rois:
-                r.handleMoveStarted()
-            self.isMoving = True
-            self.startPos = self.scenePos()
-            self.cursorOffset = self.scenePos() - ev.buttonDownScenePos()
-            self.currentPen = self.hoverPen
-
-        if self.isMoving:  ## note: isMoving may become False in mid-drag due to right-click.
-            pos = ev.scenePos() + self.cursorOffset
-            self.currentPen = self.hoverPen
-            self.movePoint(pos, ev.modifiers(), finish=False)
-    def mouseDragEvent(self,ev):
-        roi = self.roi
-        mdh = roi.mouseDragHandler
-
-        print('5')
-        if ev.isStart():
-            if ev.button() == QtCore.Qt.MouseButton.LeftButton:
-                roi.setSelected(True)
-                mods = ev.modifiers() & ~mdh.snapModifier
-                if roi.translatable and mods == mdh.translateModifier:
-                    mdh.dragMode = 'translate'
-                elif roi.rotatable and mods == mdh.rotateModifier:
-                    mdh.dragMode = 'rotate'
-                elif roi.resizable and mods == mdh.scaleModifier:
-                    mdh.dragMode = 'scale'
-                else:
-                    mdh.dragMode = None
-
-                if mdh.dragMode is not None:
-                    roi._moveStarted()
-                    mdh.startPos = roi.mapToParent(ev.buttonDownPos())
-                    mdh.startState = roi.saveState()
-                    mdh.cursorOffset = roi.pos() - mdh.startPos
-                    print('1')
-                    ev.accept()
-                else:
-                    ev.ignore()
-            else:
-                mdh.dragMode = None
-                ev.ignore()
-
-
-        print('4')
-        if ev.isFinish() and mdh.dragMode is not None:
-            roi._moveFinished()
-            return
-
-        # roi.isMoving becomes False if the move was cancelled by right-click
-        if not roi.isMoving or mdh.dragMode is None:
-            return
-
-        print('3')
-        snap = True if (ev.modifiers() & mdh.snapModifier) else None
-        pos = roi.mapToParent(ev.pos())
-        if mdh.dragMode == 'translate':
-            newPos = pos + mdh.cursorOffset
-            roi.translate(newPos - roi.pos(), snap=snap, finish=False)
-        elif mdh.dragMode == 'rotate':
-            diff = mdh.rotateSpeed * (ev.scenePos() - ev.buttonDownScenePos()).x()
-            angle = mdh.startState['angle'] - diff
-            roi.setAngle(angle, centerLocal=ev.buttonDownPos(), snap=snap, finish=False)
-        elif mdh.dragMode == 'scale':
-            print('2')
-            diff = mdh.scaleSpeed ** -(ev.scenePos() - ev.buttonDownScenePos()).y()
-            roi.setSize(Point(mdh.startState['size']) * diff, centerLocal=ev.buttonDownPos(), snap=snap, finish=False)
-            '''
-
 
 
 
