@@ -13,7 +13,8 @@ import datetime
 from PIL import Image
 import scipy.ndimage
 import matplotlib._contour as contour
-
+import threading
+import queue
 
 
 def dragEnterEvent(self, event):
@@ -273,8 +274,8 @@ class MainWindow(QtWidgets.QMainWindow):
             scene.dragMoveEvent = accept_event
             scene.dragLeaveEvent = accept_event
 
-        self.gv_in.dropEvent = self.image_in_drop
-        self.gv_out.dropEvent = self.image_in_drop
+        #self.gv_in.dropEvent = self.image_in_drop
+        #self.gv_out.dropEvent = self.image_in_drop
         self.gv_in.setRenderHint(QtGui.QPainter.HighQualityAntialiasing)
 
         #setattr(self.scene_in,'dragEnterEvent',accept_event)
@@ -333,7 +334,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.r = 45
         self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=self.r, l=256, mask='no_mask', rot=0)*255
 
-        self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+        #self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
         # for dragging image
         self.startPos = None
 
@@ -382,11 +383,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def eventFilter(self, source, event):
         gv = self.gv_in
         gv2 = self.gv_out
-
         if source == self.gv_out.viewport():
             gv = self.gv_out
             gv2 = self.gv_in
-        if source == gv.viewport() and event.type() == QtCore.QEvent.Wheel:
+        if source == gv.viewport() and event.type() == QtCore.QEvent.Drop:
+            self.image_in_drop(event)
+            return True
+        elif source == gv.viewport() and event.type() == QtCore.QEvent.Wheel:
+            #if source == gv.viewport() and type(event) == PyQt5.QtGui.QWheelEvent:
             if event.angleDelta().y() > 0:
                 scale = 1.125
             else:
@@ -479,7 +483,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1),
                                             r=self.r, l=256, mask='no_mask', rot=-ang)*255
-            self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+            self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), levelMode = 'rgb')
 
 
             y, x = np.histogram(Jab[:,:,0].ravel(), bins=np.linspace(12.5, 129.5, 100))
