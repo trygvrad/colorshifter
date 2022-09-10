@@ -12,6 +12,7 @@ import tifffile
 import datetime
 from PIL import Image
 import scipy.ndimage
+import matplotlib._contour as contour
 
 
 
@@ -297,10 +298,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.J_ROI_0 = (12.5, 129.5)
         self.J_ROI = pyqtgraph.LinearRegionItem(values=self.J_ROI_0, brush=(128,128,128,75), hoverBrush=(128,128,128,75), orientation='horizontal', movable=True, bounds=None, span=(0, 1), swapMode='sort', clipItem=None)
         self.hist_pi.addItem(self.J_ROI)
-        self.J_ROI.sigRegionChanged.connect(self.roiChanged)
+        self.J_ROI.sigRegionChanged.connect(self.roi_changed)
 
-        self.limit_slider.valueChanged.connect(self.roiChanged)
+        self.limit_slider.valueChanged.connect(self.roi_changed)
         self.downsample.valueChanged.connect(self.new_file)
+        self.rotation.valueChanged.connect(self.new_file)
 
         send_queue, return_queue = queue.Queue(), queue.Queue()
         self.rimt = rimt(send_queue, return_queue).rimt
@@ -339,7 +341,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.roi = self.original_colorspace.roi
         self.roi.show()
         self.roi.setSize((256,256), update=True, finish=False)
-        self.roi.sigRegionChanged.connect(self.roiChanged)
+        self.roi.sigRegionChanged.connect(self.roi_changed)
         self.roi.removeHandle(0)
         self.roi.addScaleHandle([1, 1], [0.5, 0.5])
         self.roi.invertible = True
@@ -438,6 +440,15 @@ class MainWindow(QtWidgets.QMainWindow):
         qpixmap = QPixmap(qimg)
         return qpixmap
 
+    def rot(self, Jab, ang):
+        #phi = np.arctan2(Jab[:,:,1], Jab[:,:,2])+ang
+        #sat = np.sqrt(Jab[:,:,1]**2 + Jab[:,:,2]**2)
+        s = np.sin(ang*2*np.pi/360)
+        c = np.cos(ang*2*np.pi/360)
+        a = Jab[:,:,1]*c - Jab[:,:,2]*s
+        Jab[:,:,2] = Jab[:,:,1]*s + Jab[:,:,2]*c
+        Jab[:,:,1] = a
+
     def new_file(self,file = None):
         if type(file) != type(''):
             if hasattr(self,'file'):
@@ -445,8 +456,6 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 return
         self.file = file
-        print(file)
-        print(self.file)
         formats = ['png','jpg','jpeg']
         if file.split('.')[-1] in formats :
             downsample = self.downsample.value()
@@ -464,7 +473,14 @@ class MainWindow(QtWidgets.QMainWindow):
             v0 = self.original_colorspace.getView()
 
             Jab = colorspacious.cspace_convert(image[:,:,:3], 'sRGB255', 'CAM02-LCD')
+            ang = self.rotation.value()
+            self.rot(Jab, -ang)
             self.Jab = Jab
+
+            self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1),
+                                            r=self.r, l=256, mask='no_mask', rot=-ang)*255
+            self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
+
 
             y, x = np.histogram(Jab[:,:,0].ravel(), bins=np.linspace(12.5, 129.5, 100))
             self.hist_curve.setData(-x,y)
@@ -506,7 +522,7 @@ class MainWindow(QtWidgets.QMainWindow):
             #self.roi.mouseDragEvent = self.mouseDragEvent
 
 
-    def roiChanged(self):
+    def roi_changed(self):
         if self.updating_img == False:
             self.updating_img = True
             QtCore.QTimer.singleShot(250, self.update_img)
@@ -537,6 +553,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # shift center
         Jab[:,:,1] += (center[1]-128)*self.r/128
         Jab[:,:,2] += (center[0]-128)*self.r/128
+
+        ang = self.rotation.value()
+        self.rot(Jab, ang)
         apply_sat_limit(limited_Jab := np.copy(Jab),'individual')
         apply_J_limit(Jab,'individual')
         f = float(self.limit_slider.value())/100
@@ -568,9 +587,22 @@ class MainWindow(QtWidgets.QMainWindow):
         levels = np.linspace(hist.min(), hist.max(), 7)
         for i, v in enumerate(levels[1:-1]):
             ## generate isocurve with automatic color selection
-            c = pyqtgraph.IsocurveItem(data =hist.T,  level=v, pen=[0,0,0])
+            data = hist.T
+            mask, corner_mask, nchunk = None, True, 0
+            xx, yy = np.meshgrid(np.arange(256), np.arange(256))
+            c = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
+            res = c.create_contour(v)[0]
+            res -= 128
+            s = np.sin(-ang*2*np.pi/360)
+            c = np.cos(-ang*2*np.pi/360)
+            x        = res[:,0]*c - res[:,1]*s
+            res[:,1] = res[:,0]*s + res[:,1]*c
+            res[:,0] = x
+            res += 128
+            #c = pyqtgraph.IsocurveItem(data =data,  level=v, pen=[0,0,0])
+            #c.setZValue(100)
+            c =  pyqtgraph.PlotDataItem(res[:,1], res[:,0])
             c.setParentItem(self.original_colorspace.getImageItem())  ## make sure isocurve is always correctly displayed over image
-            c.setZValue(100)
             self.fit_curves.append(c)
             self.original_colorspace.addItem(c)
 
