@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-from PyQt5 import QtCore, QtGui, QtWidgets, uic
-from PyQt5.QtGui import QColor, QImage, QPixmap
-from PyQt5.QtWidgets import  QColorDialog, QGraphicsPixmapItem, QGraphicsScene#QTreeWidgetItem
+from PySide2 import QtCore, QtGui, QtWidgets
+from PySide2.QtGui import QColor, QImage, QPixmap
+from PySide2.QtWidgets import  QColorDialog, QGraphicsPixmapItem, QGraphicsScene#QTreeWidgetItem
 import pyqtgraph
 import os
 import sys
@@ -15,6 +15,7 @@ import scipy.ndimage
 import matplotlib._contour as contour
 import threading
 import queue
+from PySide2.QtUiTools import QUiLoader
 
 
 SATURATION_R = 45
@@ -28,6 +29,24 @@ def dragLeaveEvent(self, event):
 #setattr(QGraphicsScene,'dragEnterEvent',dragEnterEvent)
 #setattr(QGraphicsScene,'dragMoveEvent',dragMoveEvent)
 #setattr(QGraphicsScene,'dragLeaveEvent',dragLeaveEvent)
+
+QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_ShareOpenGLContexts)
+class UiLoader(QUiLoader):
+    def __init__(self, base_instance):
+        QUiLoader.__init__(self, base_instance)
+        self.base_instance = base_instance
+
+    def createWidget(self, class_name, parent=None, name=''):
+        if parent is None and self.base_instance:
+            return self.base_instance
+        elif class_name == "ImageView":
+            return pyqtgraph.ImageView(parent=parent)
+        else:
+            # create a new widget for child widgets
+            widget = QUiLoader.createWidget(self, class_name, parent, name)
+            if self.base_instance:
+                setattr(self.base_instance, name, widget)
+            return widget
 
 def apply_sat_limit(Jab, limit_sat = 'shared'):
     '''
@@ -253,12 +272,16 @@ def make_curves(Jab, ang, levels = None):
     data = hist.T
     mask, corner_mask, nchunk = None, True, 0
     xx, yy = np.meshgrid(np.arange(256), np.arange(256))
+    # may need to change to  contourpy in the future
     qcg = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
     curves = []
     for i, v in enumerate(levels):
         ## generate isocurve with automatic color selection
         v = np.max([v,1])
         reses = qcg.create_contour(v)
+        # there are different versions of matplotlib that give different return types, do a type check to account for this
+        if type(reses[0]) != np.ndarray:
+            reses = reses[0]
         for res in reses:
             res -= 128
             s = np.sin(-ang*2*np.pi/360)
@@ -339,7 +362,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
             path = str(application_path) + '/colorshifter.ui'
 
-        uic.loadUi(path, self)
+        loader = UiLoader(self)
+        widget = loader.load(path)
 
         self.setObjectName("MainWindow")
         # set icon
@@ -463,8 +487,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.out_pic.setTransformationMode(QtCore.Qt.SmoothTransformation)
 
 
-        file = '/home/trygvrad/colorshifter/Screenshot from 2022-09-06 11-03-52.png'
-        self.new_file(file)
+        #file = '/home/trygvrad/colorshifter/Screenshot from 2022-09-06 11-03-52.png'
+        #self.new_file(file)
 
     def save_clicked(self,event):
         filepath = self.path.text()
@@ -658,7 +682,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 
-    @QtCore.pyqtSlot(object)
+    @QtCore.Slot(object)
     def update_composite_slot(self, *args):
         if self.updating_colors == False:
             self.updating_colors = True
@@ -673,10 +697,10 @@ class rimt():
     def __init__(self, send_queue, return_queue):
         self.send_queue = send_queue
         self.return_queue = return_queue
-        self.main_thread = threading.currentThread()
+        self.main_thread = threading.current_thread()
 
     def rimt(self, function, *args, **kwargs):
-        if threading.currentThread() == self.main_thread:
+        if threading.current_thread() == self.main_thread:
             return function(*args, **kwargs)
         else:
             self.send_queue.put(functools.partial(function, *args, **kwargs))
