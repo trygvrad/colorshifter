@@ -23,3 +23,14 @@ Or used to recolor a texture (here also removing blue hues):
 ![](example_1.png?raw=true)
 
 This is a hobby project that was made in a few days. Contributions are welcome.
+
+
+The exe is compiled in python3.10 using pyinstaller 5.4.1 with the following packages/versions:
+
+PySide2                   5.15.2.1, 
+pyqtgraph                 0.12.4, 
+numpy                     1.23.3,
+contourpy                 1.0.5,
+Pillow                    9.2.0,
+scipy                     1.9.1,
+colorspacious             1.1.2

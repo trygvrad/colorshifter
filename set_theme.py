@@ -1,7 +1,7 @@
 
-from PyQt5.QtGui import QPalette, QColor
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
+from PySide2.QtGui import QPalette, QColor
+from PySide2.QtWidgets import QApplication
+from PySide2.QtCore import Qt
 
 QApplication.setStyle("Fusion")
 palette = QPalette()
@@ -22,6 +22,3 @@ QApplication.setPalette(palette)
 
 import pyqtgraph
 pyqtgraph.setConfigOption('background', [30,30,30])
-
-import matplotlib as mpl
-mpl.rcParams["figure.facecolor"] = np.array([30/255,30/255,30/255])

@@ -2,16 +2,17 @@
 # -*- coding: utf-8 -*-
 import PySide2
 import pyqtgraph
-import matplotlib
+#import matplotlib._contour
+import contourpy
 import os
 import sys
 import numpy
+import scipy.interpolate
+import scipy.ndimage
 import threading
 import pathlib
 import time
-import tifffile
 import colorspacious
-import colorstamps
 
 #try:
 # determine if application is a script file or frozen exe

@@ -8,11 +8,12 @@ import sys
 import numpy as np
 import threading
 import pathlib
-import tifffile
 import datetime
 from PIL import Image
 import scipy.ndimage
-import matplotlib._contour as contour
+import scipy.interpolate
+#import matplotlib._contour as contour
+import contourpy
 import threading
 import queue
 from PySide2.QtUiTools import QUiLoader
@@ -47,6 +48,65 @@ class UiLoader(QUiLoader):
             if self.base_instance:
                 setattr(self.base_instance, name, widget)
             return widget
+
+def get_const_J(J = 95, a = (-1,1), b = (-1,1), r = 33.0, l=256, mask = 'no_mask', rot = 0):
+    '''
+    from https://github.com/trygvrad/colorstamps/blob/main/colorstamps/stamps.py
+    Generates am rgb colormap of (l,l,3) that attempts to keep a constant lightness in the CAM02-LCD colorspace
+    The colormap is based on the a-b plane of the Jab colorspace for a constant J.
+    Args:
+        J: float (lighness), default 95, range approximately 1->128,
+        a: tuple of 2 floats, default (-1,1). The limit along the a-axis will be (a[0]*r,a[1]*r)
+        b: tuple of 2 floats, default (-1,1). The limit along the b-axis will be (b[0]*r,b[1]*r)
+        r: float, default 33.0. The saturation where a or b is 1. (named 'r' for radius in the a-b plane)
+        l: int, default 256. Size of the colormap.
+        mask: string, default 'no_mask'.
+                If 'circle' makes a circular mask, and everything outside will be np.nan
+                If 'unavailable' makes a colors that "should" have rgb<0 or rgb>1 when transformed to sRGB will be np.nan
+        rot: rotation of the hues on the a-b plane, in degrees
+    returns:
+        a (l,l,3) numpy array of rgb values
+    '''
+
+
+    Jab = np.zeros((l,l,3))
+    Jab[:,:,0] = J
+    ar = np.linspace(r*a[0], r*a[1],l)
+    br = np.linspace(r*b[0], r*b[1],l)
+    set_ab_rot(Jab, ar, br, rot)
+
+    rgb = colorspacious.cspace_convert(Jab, 'CAM02-LCD', "sRGB1")
+
+    #mask_rgb(rgb, a, b, mask)
+
+    rgb[rgb[:,:,:]<0] = 0
+    rgb[rgb[:,:,:]>1] = 1
+
+    return rgb
+def set_ab_rot(Jab, ar, br, rot):
+    '''
+    from https://github.com/trygvrad/colorstamps/blob/main/colorstamps/stamps.py
+    sets the [:,:,1] and [:,:,2] axes of a Jab colormap to ar and br
+    then rotates the ab color plane according to the angle rot
+    Args:
+        Jab: (l,l,3) colormap
+        ar: 1d array, typically made by np.linspace()
+        br: 1d array, typically made by np.linspace()
+        rot: angle in degrees
+    returns:
+        None (but Jab changed in-place)
+    '''
+
+    if rot==0:
+        Jab[:,:,1] = ar[:,np.newaxis]
+        Jab[:,:,2] = br[np.newaxis,:]
+    else:
+        ab = np.sqrt(ar[:,np.newaxis]**2+br[np.newaxis,:]**2)
+        Jab[:,:,1] = ar[:,np.newaxis]
+        Jab[:,:,2] = br[np.newaxis,:]
+        phi = np.arctan2(Jab[:,:,1],Jab[:,:,2])+rot*np.pi/180
+        Jab[:,:,2] = ab*np.cos(phi)
+        Jab[:,:,1] = ab*np.sin(phi)
 
 def apply_sat_limit(Jab, limit_sat = 'shared'):
     '''
@@ -273,13 +333,15 @@ def make_curves(Jab, ang, levels = None):
     mask, corner_mask, nchunk = None, True, 0
     xx, yy = np.meshgrid(np.arange(256), np.arange(256))
     # may need to change to  contourpy in the future
-    qcg = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
+    #qcg = contour.QuadContourGenerator(xx, yy, data, mask, corner_mask, nchunk)
+    qcg = contourpy.contour_generator(xx, yy, data)
     curves = []
     for i, v in enumerate(levels):
         ## generate isocurve with automatic color selection
         v = np.max([v,1])
         reses = qcg.create_contour(v)
         # there are different versions of matplotlib that give different return types, do a type check to account for this
+        #  can probably remove check now that using contourpy
         if type(reses[0]) != np.ndarray:
             reses = reses[0]
         for res in reses:
@@ -458,7 +520,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for img in  [self.original_colorspace]:
             img.getImageItem().setLevels(self.levels)
         #colorstamps.stamps.get_sat_limts()
-        self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=SATURATION_R, l=256, mask='no_mask', rot=0)*255
+        self.stamp = get_const_J(J=70, a=(-1, 1), b=(-1, 1), r=SATURATION_R, l=256, mask='no_mask', rot=0)*255
 
         #self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), autoLevels = False, levelMode = 'rgb')
         # for dragging image
@@ -616,7 +678,7 @@ class MainWindow(QtWidgets.QMainWindow):
             rot(Jab, -ang)
             self.Jab = Jab
 
-            self.stamp = colorstamps.stamps.get_const_J(J=70, a=(-1, 1), b=(-1, 1),
+            self.stamp = get_const_J(J=70, a=(-1, 1), b=(-1, 1),
                                             r=SATURATION_R, l=256, mask='no_mask', rot=-ang)*255
             self.original_colorspace.getImageItem().setImage(np.transpose(self.stamp, axes = (1,0,2)), levelMode = 'rgb')
 
